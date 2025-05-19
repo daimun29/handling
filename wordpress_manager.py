@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
 from pathlib import Path
+import google.generativeai as genai
 
 # Konfigurasi logging
 logging.basicConfig(
@@ -16,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class WordPressManager:
-    """Kelas untuk mengelola website WordPress melalui REST API dengan integrasi Grok AI."""
+    """Kelas untuk mengelola website WordPress melalui REST API dengan integrasi Gemini AI."""
 
     def __init__(self):
         """Inisialisasi WordPressManager dengan kredensial dari file .env."""
@@ -26,11 +27,12 @@ class WordPressManager:
         self.jwt_url = f"{self.site_url}/wp-json/jwt-auth/v1/token"
         self.username = os.getenv("WORDPRESS_USERNAME")
         self.password = os.getenv("WORDPRESS_PASSWORD")
-        self.grok_api_key = os.getenv("GROK_API_KEY")
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.token = None
         self.headers = None
         self._validate_config()
         self.authenticate()
+        self._configure_gemini()
 
     def _validate_config(self) -> None:
         """Validasi kredensial dan konfigurasi."""
@@ -38,12 +40,22 @@ class WordPressManager:
             "WORDPRESS_URL": self.site_url,
             "WORDPRESS_USERNAME": self.username,
             "WORDPRESS_PASSWORD": self.password,
-            "GROK_API_KEY": self.grok_api_key
+            "GEMINI_API_KEY": self.gemini_api_key
         }
         for key, value in required.items():
             if not value:
                 logger.error(f"Konfigurasi {key} tidak ditemukan di .env")
                 raise ValueError(f"Konfigurasi {key} tidak ditemukan di .env")
+
+    def _configure_gemini(self) -> None:
+        """Konfigurasi Gemini API."""
+        try:
+            genai.configure(api_key=self.gemini_api_key)
+            self.gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+            logger.info("Gemini API dikonfigurasi berhasil.")
+        except Exception as e:
+            logger.error(f"Gagal mengkonfigurasi Gemini API: {str(e)}")
+            raise
 
     def authenticate(self) -> None:
         """Autentikasi ke WordPress menggunakan JWT."""
@@ -244,28 +256,25 @@ class WordPressManager:
             logger.error(f"Gagal membuat backup: {str(e)}")
             raise
 
-    # --- Integrasi Grok AI ---
-    def generate_article_with_grok(self, topic: str, length: str = "medium") -> Dict:
-        """Menghasilkan artikel menggunakan Grok AI."""
+    # --- Integrasi Gemini AI untuk Pembuatan Artikel ---
+    def generate_article_with_gemini(self, topic: str, length: str = "medium") -> Dict:
+        """Menghasilkan artikel menggunakan Gemini AI."""
         try:
-            url = "https://api.x.ai/v1/grok/generate"
-            headers = {
-                "Authorization": f"Bearer {self.grok_api_key}",
-                "Content-Type": "application/json"
-            }
             length_map = {"short": 200, "medium": 500, "long": 1000}
             word_count = length_map.get(length, 500)
-            payload = {
-                "prompt": f"Buat artikel tentang '{topic}' dalam bahasa Indonesia dengan panjang sekitar {word_count} kata.",
-                "max_tokens": word_count * 4  # Estimasi token
-            }
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-            content = result.get("text", "")
-            title = topic.title()
-            logger.info(f"Artikel tentang '{topic}' dihasilkan oleh Grok AI.")
-            return {"title": title, "content": content}
-        except requests.RequestException as e:
-            logger.error(f"Gagal menghasilkan artikel dengan Grok AI: {str(e)}")
+            prompt = (
+                f"Buat artikel dalam bahasa Indonesia tentang '{topic}' dengan panjang sekitar {word_count} kata. "
+                f"Gunakan gaya penulisan yang informatif dan menarik, cocok untuk blog WordPress. "
+                f"Sertakan judul yang relevan dan konten yang terstruktur dengan paragraf yang jelas."
+            )
+            response = self.gemini_model.generate_content(prompt)
+            content = response.text
+            # Asumsi konten dimulai dengan judul (misalnya, dalam format markdown atau teks)
+            lines = content.split("\n")
+            title = lines[0].strip("# ").strip() if lines[0].startswith("#") else topic.title()
+            article_content = "\n".join(lines[1:]).strip() if lines[0].startswith("#") else content
+            logger.info(f"Artikel tentang '{topic}' dihasilkan oleh Gemini AI.")
+            return {"title": title, "content": article_content}
+        except Exception as e:
+            logger.error(f"Gagal menghasilkan artikel dengan Gemini AI: {str(e)}")
             raise
